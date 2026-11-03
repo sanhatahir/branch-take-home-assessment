@@ -1,11 +1,12 @@
 # Importing required packages:
 import argparse
-import json
-import os
-import tempfile
-import requests
 from datetime import date, timedelta
 from pathlib import Path
+
+if __package__:
+    from .utils import fetch_json, save_json_atomic
+else:
+    from utils import fetch_json, save_json_atomic
 
 
 exchange_rate_url = "https://api.frankfurter.dev/v2/rates"
@@ -17,7 +18,7 @@ exchange_rate_output_dir = (
 
 def fetch_rates(start_date, end_date=None):
     """
-    Objective: 
+    Objective:
     get USD-based records for a date and/or backfill?
 
     start_date and optional end_date are datetime.date objects.
@@ -31,15 +32,11 @@ def fetch_rates(start_date, end_date=None):
         exchange_rate_params["from"] = start_date.isoformat()
         exchange_rate_params["to"] = end_date.isoformat()
 
-    response = requests.get(
+    records = fetch_json(
         exchange_rate_url,
         params=exchange_rate_params,
         timeout=60,
     )
-    response.raise_for_status()
-
-    records = response.json()
-
     if not isinstance(records, list):
         raise ValueError("Expected a list of rate records")
 
@@ -48,24 +45,12 @@ def fetch_rates(start_date, end_date=None):
 
 def save_raw(records, filename):
     """
-    Objective: 
+    Objective:
     save records to filename under the raw output directory
 
     """
-    exchange_rate_output_dir.mkdir(parents=True, exist_ok=True)
     path = exchange_rate_output_dir / filename
-    temporary_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent,
-            prefix=f".{path.name}.", suffix=".tmp", delete=False,
-        ) as file:
-            temporary_path = Path(file.name)
-            json.dump(records, file, indent=2, allow_nan=False)
-        os.replace(temporary_path, path)
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+    save_json_atomic(records, path)
 
     print(f"Saved {len(records)} records to {path}")
 
@@ -99,7 +84,7 @@ def run_backfill(start_date, end_date):
     _save_daily_records(records)
 
 
-def run_daily(target_date):
+def ingest_exchange_rate_daily(target_date):
     """Fetch a requested datetime.date and write files grouped by API rate date.
 
     Returns None; fetch/write errors propagate. Actual dates may differ from
@@ -140,4 +125,4 @@ if __name__ == "__main__":
             date.today() - timedelta(days=1)
         )
 
-        run_daily(target)
+        ingest_exchange_rate_daily(target)
