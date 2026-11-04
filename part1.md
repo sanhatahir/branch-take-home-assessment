@@ -257,6 +257,29 @@ source-completeness checks, retries/backoff, scheduling, and freshness alerts.
 
 ## 8. Running and Validating the Pipeline
 
+### Testing and Validation
+
+Install `requirements-dev.txt` and run `python -m pytest -v` from the repository root.
+Four pytest tests exercise the actual transformations and reporting SQL: idempotent
+rate loads and corrected-value updates, the PEN → AUD cross-rate calculation,
+missing weekend publication dates without forward-filling, and multiple/shared
+country currencies without duplicate mappings. All four use pytest's `tmp_path`
+for isolated data and databases, and make no live API calls. The existing mocked
+empty-response test remains in the suite, checking warnings and preserved raw files.
+
+These automated checks are separate from live end-to-end validation and do not
+establish API availability or source freshness.
+
+Validation on November 3, 2026: all five collected tests passed (four new pytest
+tests plus the existing empty-response regression); none failed. Dependencies
+installed successfully in a fresh virtual environment and `pip check` passed.
+An isolated source copy with no initial data completed the documented January 1
+backfill and daily build against the live APIs. Its warehouse contained 250 countries,
+268 currency mappings, 46,789 rates, and the reporting view. Both assessment queries
+executed. A separate mocked-empty-response run continued through reporting with exit
+code `0` and the warning summary. Hash checks confirmed the developer's original
+raw files and warehouse were unchanged. No application changes were needed.
+
 Follow [README setup](README.md#setup-and-execution) first. Run commands from the
 repository root; both `python -m ...` and direct script execution are supported.
 
@@ -326,15 +349,15 @@ FROM (
 ```
 
 Verified local result on November 3, 2026: **0 duplicate grain groups**. Runtime and
-row counts depend on the raw data present. No fresh API ingestion was run for this
-documentation update; the reported results come from the existing warehouse.
+row counts depend on the raw data present. Fresh-start validation is described in
+the Testing and Validation subsection above; the dated assessment results remain
+snapshots rather than guarantees about future source responses.
 
 
 ## 9. Design Decisions and Trade-offs
 
 | Decision | Reason and trade-off |
 | --- | --- |
-| Local DuckDB warehouse | SQL analytics with minimal setup; shared application serving and concurrent writers would need a different operational design |
 | Normalized core tables | Preserves multiple/shared currencies and stores each daily rate once; reporting requires joins |
 | Reporting view | Keeps cross-rate logic in one SQL definition without another physical load; country-pair queries expand combinations at query time |
 | Raw JSON retained separately | Supports inspection and reprocessing without another API request; snapshots are overwritten rather than versioned |

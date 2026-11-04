@@ -36,6 +36,19 @@ python -m scripts.build_daily
 * Directories and the warehouse are created automatically. 
 * Backfill is a separate initial step; running only the daily build does not download history beyond its seven-day refresh window.
 
+## Running tests
+
+With the virtual environment activated, install the test dependencies and run:
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest -v
+```
+
+The four pipeline tests use temporary JSON files and DuckDB databases, without live
+API requests or access to your warehouse. The existing empty-response regression
+test is also included (five tests total).
+
 ## Repository layout
 
 ```text
@@ -58,8 +71,8 @@ querying_data.ipynb                  # Warehouse queries
 The reporting view is `mart.country_exchange_rates`, defined in
 [scripts/reporting/country_exchange_rates.sql](scripts/reporting/country_exchange_rates.sql).
 It divides destination and source USD-based rates from the same publication date.
-See [Part 1](part1.md#7-assessment-queries-and-results) for the PEN → AUD queries and results.
+See [Part 1](part1.md#6-assessment-queries-and-verified-results) for the PEN → AUD queries and results.
 
 **IMPORTANT NOTE:**
 The assignment names REST Countries; this implementation uses countries.dev as a
-replacement source. [Part 1](part1.md#3-data-sources) documents the difference.
+replacement source. [Part 1](part1.md#3-data-sources-and-ingestion) documents the difference.
