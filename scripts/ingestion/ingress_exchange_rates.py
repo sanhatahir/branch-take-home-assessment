@@ -1,7 +1,7 @@
 # Importing required packages:
 import argparse
 import logging
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 if __package__:
@@ -128,8 +128,6 @@ if __name__ == "__main__":
         run_backfill(start, end)
 
     elif args.mode == "daily":
-        target = args.date or (
-            date.today() - timedelta(days=1)
-        )
+        target = args.date or date.today()
 
         ingest_exchange_rate_daily(target)

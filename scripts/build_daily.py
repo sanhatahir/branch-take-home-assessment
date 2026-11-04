@@ -38,8 +38,8 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
-    end_date = date.today() - timedelta(days=1)
-    # Refresh seven calendar dates, including yesterday, for missed or revised publications.
+    end_date = date.today()
+    # Refresh seven calendar dates, including today, for missed or revised publications.
     start_date = end_date - timedelta(days=LOOKBACK_DAYS - 1)
     logger.info("Starting daily pipeline with exchange-rate window %s through %s (inclusive)",
                 start_date, end_date)
