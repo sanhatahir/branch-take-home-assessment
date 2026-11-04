@@ -3,7 +3,6 @@
 import json
 from datetime import date
 from pathlib import Path
-
 import duckdb
 
 # Locate the repository so default paths work from any working directory.
