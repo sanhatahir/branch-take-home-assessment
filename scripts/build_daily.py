@@ -1,6 +1,9 @@
-"""Run daily ingestion and transformations and report their overall status."""
+"""Run daily ingestion, transformations, and reporting view creation."""
 
 from datetime import date, timedelta
+from pathlib import Path
+
+import duckdb
 
 if __package__:
     from .ingestion.ingress_countries import ingest_countries
@@ -14,22 +17,33 @@ else:
     from transformations.transform_exchange_rates import transform_exchange_rates
 
 
+def create_reporting_view():
+    """Create or update the reporting view using the project's SQL file."""
+    root = Path(__file__).resolve().parents[1]
+    sql = (root / "scripts/reporting/country_exchange_rates.sql").read_text(encoding="utf-8")
+    with duckdb.connect(str(root / "data/warehouse/branch.duckdb")) as connection:
+        connection.execute(sql)
+
+
 def main():
     target_date = date.today() - timedelta(days=1)
     operations = [
-        ("countries ingestion", ingest_countries, (), None),
-        ("exchange rates ingestion", ingest_exchange_rate_daily, (target_date,), None),
-        ("countries transformation", transform_countries, (), "countries ingestion"),
-        ("exchange rates transformation", transform_exchange_rates, (), "exchange rates ingestion"),
+        ("countries ingestion", ingest_countries, (), ()),
+        ("exchange rates ingestion", ingest_exchange_rate_daily, (target_date,), ()),
+        ("countries transformation", transform_countries, (), ("countries ingestion",)),
+        ("exchange rates transformation", transform_exchange_rates, (), ("exchange rates ingestion",)),
+        ("reporting view", create_reporting_view, (),
+         ("countries transformation", "exchange rates transformation")),
     ]
     failures = []
     succeeded = set()
     skipped = []
-    for name, operation, args, dependency in operations:
-        # Transform a source only after its ingestion succeeds, avoiding stale input on failure.
-        if dependency is not None and dependency not in succeeded:
+    for name, operation, args, dependencies in operations:
+        # Run each step only after all its required operations have succeeded.
+        missing_dependencies = [dependency for dependency in dependencies if dependency not in succeeded]
+        if missing_dependencies:
             skipped.append(name)
-            print(f"SKIPPED: {name}: {dependency} did not succeed")
+            print(f"SKIPPED: {name}: {', '.join(missing_dependencies)} did not succeed")
             continue
         try:
             operation(*args)
