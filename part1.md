@@ -92,7 +92,7 @@ erDiagram
 1. Currency information comes from the country records; a Frankfurter exchange-rate record *can* have no
 matching currency-dimension record. 
 2. The reporting view continues to join the original
-country, bridge, and rate tables. It does not join the currency table on purpose, to get the main information needed without additional bagagge.
+country, bridge, and rate tables. It does not join the currency table on purpose, to get the main information needed without additional baggage.
 
 
 ## 3. Data Sources and Ingestion
@@ -232,7 +232,7 @@ WHERE source_country_code = 'PER'
 * Duplicates:
   * Country Name: Last usable name wins 
   * Rates: Last usable records (in sorted order) wins
-  * Conflucts aren't flagged -> duplicate rows are prevented via upsertions and PKs. 
+  * Conflicts aren't flagged -> duplicate rows are prevented via upsertions and PKs. 
 
 
 Plans for future potential improvements, **not implemented**: 
@@ -240,7 +240,7 @@ Plans for future potential improvements, **not implemented**:
 2. strict code validation
 3. conflict detection
 4. versioned raw snapshots,
-6. source-completeness and freshness checks
+5. source-completeness and freshness checks
 
 
 ## 8. Running and Validating the Pipeline
