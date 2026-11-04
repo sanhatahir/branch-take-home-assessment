@@ -97,21 +97,115 @@ def test_missing_publication_dates_are_not_forward_filled(tmp_path):
 
 def test_multiple_and_shared_country_currencies(tmp_path):
     source = tmp_path / "countries.json"
-    source.write_text(json.dumps([
-        {"alpha3Code": "BTN", "name": "Bhutan", "currencies": [
-            {"code": "BTN"}, {"code": "INR"}, {"code": "INR"},
+    records = [
+        {"alpha3Code": " btn ", "name": "Bhutan", "capital": [" Thimphu ", "Second capital"],
+         "population": 123, "currencies": [
+            {"code": "BTN", "name": "Ngultrum"},
+            {"code": " inr ", "name": "Z rupee", "symbol": "₹"}, {"code": "INR"},
         ]},
-        {"alpha3Code": "IND", "name": "India", "currencies": [{"code": "INR"}]},
-    ]), encoding="utf-8")
+        {"alpha3Code": "IND", "name": "India", "capital": " New Delhi ", "population": 0,
+         "currencies": [{"code": "INR", "name": " Indian rupee ", "symbol": " Rs "}]},
+        {"alpha3Code": "NUL", "name": "Optional fields absent", "currencies": [{"code": "XTS"}]},
+    ]
+    source.write_text(json.dumps(records), encoding="utf-8")
     database = tmp_path / "warehouse.duckdb"
     transform_countries(source, database)
+    # Reordering shared metadata must not change its resolution or create duplicates.
+    source.write_text(json.dumps(list(reversed(records))), encoding="utf-8")
+    transform_countries(source, database)
     with duckdb.connect(str(database)) as connection:
+        assert connection.execute("SELECT * FROM core.countries ORDER BY country_code").fetchall() == [
+            ("BTN", "Bhutan", "Thimphu; Second capital", 123),
+            ("IND", "India", "New Delhi", 0),
+            ("NUL", "Optional fields absent", None, None),
+        ]
+        assert connection.execute("SELECT * FROM core.currencies ORDER BY currency_code").fetchall() == [
+            ("BTN", "Ngultrum", None), ("INR", "Indian rupee", "Rs"), ("XTS", None, None),
+        ]
         assert connection.execute("""
             SELECT country_code, currency_code FROM core.country_currencies ORDER BY 1, 2
-        """).fetchall() == [("BTN", "BTN"), ("BTN", "INR"), ("IND", "INR")]
+        """).fetchall() == [("BTN", "BTN"), ("BTN", "INR"), ("IND", "INR"), ("NUL", "XTS")]
         assert connection.execute("""
             SELECT count(*) FROM (
                 SELECT country_code, currency_code FROM core.country_currencies
                 GROUP BY ALL HAVING count(*) > 1
             )
         """).fetchone()[0] == 0
+
+
+def test_legacy_country_schema_upgrade_preserves_history_and_reporting(tmp_path):
+    database = tmp_path / "legacy.duckdb"
+    with duckdb.connect(str(database)) as connection:
+        connection.execute("CREATE SCHEMA core")
+        connection.execute("CREATE TABLE core.countries (country_code VARCHAR PRIMARY KEY, country_name VARCHAR NOT NULL)")
+        connection.execute("""CREATE TABLE core.country_currencies (
+            country_code VARCHAR, currency_code VARCHAR, PRIMARY KEY (country_code, currency_code)
+        )""")
+        connection.execute("INSERT INTO core.countries VALUES ('PER', 'Peru'), ('AUS', 'Australia')")
+        connection.execute("INSERT INTO core.country_currencies VALUES ('PER', 'PEN'), ('AUS', 'AUD')")
+    raw = tmp_path / "rates"
+    raw.mkdir()
+    (raw / "rates_2026-01-02.json").write_text(json.dumps([
+        {"date": "2026-01-02", "base": "USD", "quote": "PEN", "rate": 3.5},
+        {"date": "2026-01-02", "base": "USD", "quote": "AUD", "rate": 1.4},
+    ]), encoding="utf-8")
+    transform_exchange_rates(raw, database)
+    with duckdb.connect(str(database)) as connection:
+        connection.execute(REPORTING_SQL.read_text(encoding="utf-8"))
+        history = connection.execute("SELECT * FROM core.exchange_rates ORDER BY quote_currency").fetchall()
+    source = tmp_path / "countries.json"
+    source.write_text(json.dumps([
+        {"alpha3Code": "PER", "name": "Peru", "capital": "Lima", "population": 100,
+         "currencies": [{"code": "PEN", "name": "Peruvian sol", "symbol": "S/."}]},
+        {"alpha3Code": "AUS", "name": "Australia", "currencies": [{"code": "AUD"}]},
+    ]), encoding="utf-8")
+    transform_countries(source, database)
+    transform_countries(source, database)
+    with duckdb.connect(str(database)) as connection:
+        assert connection.execute("SELECT * FROM core.exchange_rates ORDER BY quote_currency").fetchall() == history
+        assert connection.execute("SELECT capital, population FROM core.countries WHERE country_code='PER'").fetchone() == ("Lima", 100)
+        assert connection.execute("""
+            SELECT exchange_rate FROM mart.country_exchange_rates
+            WHERE source_country_code='PER' AND destination_country_code='AUS'
+              AND source_currency='PEN' AND destination_currency='AUD'
+        """).fetchone()[0] == pytest.approx(0.4)
+
+
+@pytest.mark.parametrize("population", [-1, 1.5, True, "100", 9223372036854775808])
+def test_invalid_population_preserves_existing_snapshot(tmp_path, population):
+    source = tmp_path / "countries.json"
+    database = tmp_path / "warehouse.duckdb"
+    record = {"alpha3Code": "PER", "name": "Peru", "population": 100}
+    source.write_text(json.dumps([record]), encoding="utf-8")
+    transform_countries(source, database)
+    source.write_text(json.dumps([dict(record, population=population)]), encoding="utf-8")
+    with pytest.raises(ValueError, match="nonnegative BIGINT integer"):
+        transform_countries(source, database)
+    with duckdb.connect(str(database)) as connection:
+        assert connection.execute("SELECT population FROM core.countries").fetchall() == [(100,)]
+
+
+def test_currency_load_failure_rolls_back_all_reference_tables(tmp_path):
+    database = tmp_path / "warehouse.duckdb"
+    with duckdb.connect(str(database)) as connection:
+        connection.execute("CREATE SCHEMA core")
+        connection.execute("""CREATE TABLE core.currencies (
+            currency_code VARCHAR PRIMARY KEY,
+            currency_name VARCHAR CHECK (currency_name <> 'Rejected'), currency_symbol VARCHAR
+        )""")
+    source = tmp_path / "countries.json"
+    record = {"alpha3Code": "PER", "name": "Peru", "capital": "Lima", "population": 100,
+              "currencies": [{"code": "PEN", "name": "Sol", "symbol": "S/."}]}
+    source.write_text(json.dumps([record]), encoding="utf-8")
+    transform_countries(source, database)
+    with duckdb.connect(str(database)) as connection:
+        before = {table: connection.execute(f"SELECT * FROM core.{table}").fetchall()
+                  for table in ["countries", "currencies", "country_currencies"]}
+    changed = dict(record, name="Changed", population=200,
+                   currencies=[{"code": "PEN", "name": "Rejected"}])
+    source.write_text(json.dumps([changed]), encoding="utf-8")
+    with pytest.raises(duckdb.ConstraintException):
+        transform_countries(source, database)
+    with duckdb.connect(str(database)) as connection:
+        for table, expected in before.items():
+            assert connection.execute(f"SELECT * FROM core.{table}").fetchall() == expected

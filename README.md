@@ -7,6 +7,8 @@ Thank you for taking the time to review this repo - I hope you have even more fu
 *Now, what are you looking at?*
 
 A Python batch pipeline that ingests country reference data and USD-based exchange rates, normalizes them into DuckDB, and exposes country-to-country conversions through SQL.
+Country reference data includes capitals, populations, and a currency dimension with
+optional names and symbols.
 
 Technologies: Python, `requests`, DuckDB, and SQL.
 
@@ -45,9 +47,9 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -v
 ```
 
-The four pipeline tests use temporary JSON files and DuckDB databases, without live
-API requests or access to your warehouse. The existing empty-response regression
-test is also included (five tests total).
+The tests use temporary JSON files and DuckDB databases, without live API requests
+or access to your warehouse. Coverage includes country/currency attributes, schema
+upgrades, rates, reporting, rollback, and the existing empty-response regression.
 
 ## Repository layout
 
