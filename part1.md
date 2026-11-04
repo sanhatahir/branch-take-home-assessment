@@ -1,118 +1,32 @@
-# Part 1: Data Pipeline Implementation
+# Part 1 — Country Exchange-Rate Pipeline
 
-[Project overview and setup](README.md) · [Part 2 placeholder](part2.md)
+[README / setup](README.md) · [Part 2](part2.md)
 
-## 1. Problem Statement
+## 1. Solution Overview
 
-The assignment requires country reference data, USD-based Frankfurter rates from
-January 1, 2026, and a DuckDB schema linking the datasets through currency codes.
-The outputs must support current and historical country-to-country conversions,
-including Peru (PER) to Australia (AUS).
+The assessment asks for country reference data, USD-based Frankfurter exchange rates beginning January 1, 2026, and a DuckDB model that supports current and historical country-to-country currency conversion, including **Peru (PEN) → Australia (AUD)**.
 
-The implementation provides raw ingestion, normalized core tables, a derived
-reporting view, a manual daily build, and notebook queries. Historical ingestion is
-a separate backfill command. The country source is countries.dev rather than the
-REST Countries endpoint named in the assignment; this is a submission deviation,
-not a claim that the original endpoint has been implemented.
+**Implemented:** source ingestion and historical backfill, raw JSON storage, three normalized DuckDB tables, a country-to-country reporting view, and queries for the requested conversions. The pipeline runs locally; the country API differs from the originally specified endpoint, as explained below.
 
-## 2. Architecture Overview
+**Key design choice:** store USD-based rates once by currency and publication date, then calculate cross-rates in a view. This avoids storing a separate fact row for every country pair.
 
-## Data Model & ERD
+## 2. Architecture and Data Model
 
-The pipeline uses three normalized core tables and one reporting view.
+The central design is **three normalized physical tables and one derived reporting view**. Country-to-currency mappings preserve countries with multiple currencies and currencies shared by multiple countries. Exchange rates remain currency-level facts rather than being duplicated for every country pair.
+
+### Pipeline at a glance
 
 ```mermaid
-erDiagram
-    countries ||--o{ country_currencies : has
-
-    countries {
-        VARCHAR country_code PK
-        VARCHAR country_name
-    }
-
-    country_currencies {
-        VARCHAR country_code PK
-        VARCHAR currency_code PK
-    }
-
-    exchange_rates {
-        DATE rate_date PK
-        VARCHAR base_currency PK
-        VARCHAR quote_currency PK
-        DOUBLE rate
-    }
+flowchart LR
+    A[Countries API] --> C[Raw JSON]
+    B[Frankfurter API] --> C
+    C --> D[Python transformations]
+    D --> E[(DuckDB core tables)]
+    E --> F[Country exchange-rate view]
+    F --> G[Assessment SQL queries]
 ```
 
-[scripts/build_daily.py](scripts/build_daily.py) coordinates five sequential steps:
-country ingestion, rate ingestion, country transformation, rate transformation,
-and reporting view creation. Each transformation depends only on its own ingestion;
-view creation depends on both transformations. Independent work continues after a
-failure. Logging reports step starts, successes, skips, and exception tracebacks.
-The process exits `0` on success and `1` on failure, including partial failure.
-Individual ingestion/transformation scripts also print progress messages.
-
-There is no automated schedule, orchestration service, or automatic retry mechanism.
-
-## 3. Data Sources
-
-| Source | Implemented endpoint | Requested/consumed fields |
-| --- | --- | --- |
-| countries.dev | `https://countries.dev/countries` | Requests `name,alpha2Code,alpha3Code,currencies`; models `alpha3Code`, string `name`, and `currencies[].code` |
-| Frankfurter | `https://api.frankfurter.dev/v2/rates` | Requests `base=USD` with `date` or `from`/`to`; consumes `date`, `base`, `quote`, `rate` |
-
-**IMPORTANT NOTE:**
-* Deviation of source data: 
-The assignment specifies `https://restcountries.com/v3.1/all` with fields including
-`name`, `cca2`, `cca3`, and `currencies`. 
-I realized as I was doing EDA that v1-4 have been deprecated, and v5 is behind a Bearer Token. 
-I did start working with the v5 and a dedicated Bearer Token - but on further reflection, did not continue with that. 
-Why? 
-Because I think the point of the pipeline and the way it's requested is for it to run without any API token and thus, without requiring reviewers to register for or configure API credentials..
-As such, I deviated from restcountries and instead, went for open alternatives, finally deciding on countries.dev. Its response has a string name,
-`alpha3Code`, and a currency list, rather than the assignment's nested name,
-`cca3`, and currency dictionary. 
-
-* Only identification and currency fields needed for conversion are requested. Region, capital, and population are not modeledsince I wanted to go for selective source ingestion.
-* The notebook contains earlier experiments and is not the production entry point: I've simply included it to give you an idea of my scratch work.
-
-
-## 4. Ingestion Strategy
-
-| Raw output | Behavior |
-| --- | --- |
-| `data/raw/countries/countries_raw.json` | Complete requested country response; latest snapshot replaces the previous file |
-| `data/raw/frankfurter/rates_YYYY-MM-DD.json` | One file per actual published date in the response; shared structure for daily/backfill runs |
-
-* The initial backfill calls Frankfurter with `base=USD&from=2026-01-01`; omitted `--end`
-defaults to the execution machine's current date. 
-* Each daily build requests seven calendar dates: today minus seven days through yesterday, inclusive, using the machine's local calendar date. It reuses Frankfurter's range ingestion to recover missed runs and refresh late-arriving or corrected observations within that window. For a November 3 run, the requested range is October 27 through November 2.
-* Ending yesterday avoids relying on an unfinished current day but does not guarantee completeness. Missed dates or revisions older than seven days require a manual backfill. The standalone ingestion `daily` command still requests a single date.
-* Returned publication dates can differ from requested dates. * Ingestion does not forward-fill dates or rename records to the requested date, and does not filter returned dates to the requested backfill bounds. 
-* Empty rate responses create no files and return normally; this counts as successful ingestion in the daily build.
-* A subsequent transformation still processes all existing raw rate files.
-
-[Shared utilities](scripts/ingestion/utils.py) use `requests.get`, raise unsuccessful
-HTTP responses, and parse JSON. Countries use a 30-second timeout and rates use
-60 seconds. Network, HTTP, parsing, and write errors propagate to the caller.
-There are no automatic retries. Country ingestion checks for a nonempty list of
-objects; rate ingestion checks for a list and validates publication dates before saving.
-
-JSON is written to a temporary file in the destination directory, then atomically
-replaces the target. A failed write preserves the previous target and cleans up the
-temporary file. Atomicity applies per file, not across an entire backfill: files
-already replaced before a later failure remain replaced. Reruns replace snapshots;
-they do not append duplicate raw records or preserve versioned raw history.
-
-## 5. Data Transformation and Modeling
-
-All objects live in `data/warehouse/branch.duckdb`.
-
-| Object | Storage | Grain / enforced primary key |
-| --- | --- | --- |
-| `core.countries` | Physical table | `country_code` |
-| `core.country_currencies` | Physical table | `(country_code, currency_code)` |
-| `core.exchange_rates` | Physical table | `(rate_date, base_currency, quote_currency)` |
-| `mart.country_exchange_rates` | Derived SQL view | `(rate_date, source_country_code, source_currency, destination_country_code, destination_currency)`; no physical primary key |
+### Entity relationship diagram (ERD)
 
 ```mermaid
 erDiagram
@@ -146,9 +60,68 @@ erDiagram
     EXCHANGE_RATES ||..o{ COUNTRY_EXCHANGE_RATES : "derived destination rate"
 ```
 
-The relationships above describe query paths, not enforced foreign keys. In
-particular, the many-to-many currency-code relationship is not a unique-key reference.
-The two reporting edges represent the two uses of a rate in the derived calculation.
+**How to read the diagram:** Solid entities labeled `core` are stored tables; `mart.country_exchange_rates` is a calculated SQL view, not a fourth table. Dashed relationships represent **logical joins**, not database-enforced foreign keys. The reporting view uses exchange rates twice—once for the source currency and once for the destination currency—on the same publication date.
+
+### Table grains and keys
+
+| Object | Type | Grain / key |
+| --- | --- | --- |
+| `core.countries` | Table | One row per `country_code` (PK) |
+| `core.country_currencies` | Table | One row per `(country_code, currency_code)` (composite PK) |
+| `core.exchange_rates` | Table | One row per `(rate_date, base_currency, quote_currency)` (composite PK) |
+| `mart.country_exchange_rates` | View | One row per date, source country/currency and destination country/currency (no enforced PK) |
+
+All objects are stored in or defined against `data/warehouse/branch.duckdb`.
+
+### Execution and dependencies
+
+[scripts/build_daily.py](scripts/build_daily.py) coordinates country ingestion, rate ingestion, country transformation, rate transformation, and reporting view creation. Each transformation depends on its own ingestion; view creation requires both transformations. Independent steps continue after failures. The script logs outcomes and exits with a nonzero status on failure.
+
+The daily build is manually executable; automated scheduling and automatic retries are not implemented.
+
+## 3. Data Sources and Ingestion
+
+| Source | Implemented endpoint | Requested/consumed fields |
+| --- | --- | --- |
+| countries.dev | `https://countries.dev/countries` | Requests `name,alpha2Code,alpha3Code,currencies`; models `alpha3Code`, string `name`, and `currencies[].code` |
+| Frankfurter | `https://api.frankfurter.dev/v2/rates` | Requests `base=USD` with `date` or `from`/`to`; consumes `date`, `base`, `quote`, `rate` |
+
+### Country API substitution
+
+The assessment names REST Countries (`/v3.1/all`), but the implemented pipeline uses `countries.dev`. During exploration, the REST Countries version/access changes introduced a bearer-token requirement for the alternative considered. I chose an open endpoint so reviewers can reproduce the pipeline without configuring API credentials. This is an **explicit deviation from the specified source**, not an implementation of the original endpoint.
+
+The substitute returns a string `name`, `alpha3Code`, and a list of currencies, rather than the specified nested name, `cca3`, and currency dictionary. Only identification and currency fields needed for conversion are ingested; the [EDA notebook](initial_eda.ipynb) documents exploratory work, not the production entry point.
+
+### Ingestion strategy
+
+| Raw output | Behavior |
+| --- | --- |
+| `data/raw/countries/countries_raw.json` | Complete requested country response; latest snapshot replaces the previous file |
+| `data/raw/frankfurter/rates_YYYY-MM-DD.json` | One file per actual published date in the response; shared structure for daily/backfill runs |
+
+* The initial backfill calls Frankfurter with `base=USD&from=2026-01-01`; omitted `--end`
+defaults to the execution machine's current date. 
+* Each daily build requests seven calendar dates: today minus seven days through yesterday, inclusive, using the machine's local calendar date. It reuses Frankfurter's range ingestion to recover missed runs and refresh late-arriving or corrected observations within that window. For a November 3 run, the requested range is October 27 through November 2.
+* Ending yesterday avoids relying on an unfinished current day but does not guarantee completeness. Missed dates or revisions older than seven days require a manual backfill. The standalone ingestion `daily` command still requests a single date.
+* Returned publication dates can differ from requested dates. Ingestion does not forward-fill dates or rename records to the requested date, and does not filter returned dates to the requested backfill bounds. 
+* Empty rate responses create no files and return normally; this counts as successful ingestion in the daily build.
+* A subsequent transformation still processes all existing raw rate files.
+
+[Shared utilities](scripts/ingestion/utils.py) use `requests.get`, raise unsuccessful
+HTTP responses, and parse JSON. Countries use a 30-second timeout and rates use
+60 seconds. Network, HTTP, parsing, and write errors propagate to the caller.
+There are no automatic retries. Country ingestion checks for a nonempty list of
+objects; rate ingestion checks for a list and validates publication dates before saving.
+
+JSON is written to a temporary file in the destination directory, then atomically
+replaces the target. A failed write preserves the previous target and cleans up the
+temporary file. Atomicity applies per file, not across an entire backfill: files
+already replaced before a later failure remain replaced. Reruns replace snapshots;
+they do not append duplicate raw records or preserve versioned raw history.
+
+
+## 4. Transformations and Data Loading
+
 
 **Countries.** [transform_countries.py](scripts/transformations/transform_countries.py)
 trims names, uppercases trimmed codes, and flattens the nested currency list into
@@ -166,7 +139,8 @@ upsert through `UNNEST`, avoiding row-by-row insert/update calls. Existing keys 
 corrected values; other stored history remains. Types are DATE, VARCHAR, and DOUBLE.
 Transactions roll back each transformation's database changes if loading fails.
 
-## 6. Reporting Layer
+
+## 5. Reporting Layer
 
 [mart.country_exchange_rates](scripts/reporting/country_exchange_rates.sql) is defined
 by `CREATE OR REPLACE VIEW` after ensuring the `mart` schema exists. It joins countries
@@ -189,7 +163,8 @@ country-pair rate rows. Its definition uses `NOT MATERIALIZED` for the shared qu
 following a locally observed materialized self-join stall in DuckDB 2.0. The complete
 implementation is maintained only in the SQL file linked above.
 
-## 7. Assessment Queries and Results
+
+## 6. Assessment Queries and Verified Results
 
 These results were queried from the local warehouse on **November 3, 2026**. They
 are stored reference observations, not live trading rates or guaranteed future outputs.
@@ -239,7 +214,8 @@ for other time zones or reproducible historical questions, supply an explicit da
 For the yesterday query, an empty result means both observations are not present for
 that exact date; it does not silently substitute a rate from another date.
 
-## 8. Data Quality and Edge Cases
+
+## 7. Data Quality and Edge Cases
 
 Implemented behavior:
 
@@ -273,7 +249,8 @@ Potential improvements, **not implemented**: rejection metrics, strict code vali
 conflict detection, versioned raw snapshots,
 source-completeness checks, retries/backoff, scheduling, and freshness alerts.
 
-## 9. Running and Validating the Pipeline
+
+## 8. Running and Validating the Pipeline
 
 Follow [README setup](README.md#setup-and-execution) first. Run commands from the
 repository root; both `python -m ...` and direct script execution are supported.
@@ -347,7 +324,8 @@ Verified local result on November 3, 2026: **0 duplicate grain groups**. Runtime
 row counts depend on the raw data present. No fresh API ingestion was run for this
 documentation update; the reported results come from the existing warehouse.
 
-## 10. Design Decisions and Trade-offs
+
+## 9. Design Decisions and Trade-offs
 
 | Decision | Reason and trade-off |
 | --- | --- |
@@ -356,7 +334,7 @@ documentation update; the reported results come from the existing warehouse.
 | Reporting view | Keeps cross-rate logic in one SQL definition without another physical load; country-pair queries expand combinations at query time |
 | Raw JSON retained separately | Supports inspection and reprocessing without another API request; snapshots are overwritten rather than versioned |
 | Source-specific ingestion plus shared HTTP/write helpers | Reuses transport and persistence while keeping historical retrieval specific to Frankfurter |
-| Yesterday as the daily target | Avoids relying on an unfinished current day; latest available data can still be incomplete or lagging |
+| Seven-day rolling lookback ending yesterday | Recovers recent missed runs and revisions; older gaps require manual backfill |
 | Bulk rate upsert | Avoids individual SQL calls per rate; the current script still reads and holds all historical raw records in memory each run |
 | Lightweight validation | Keeps this assessment small; strict ISO validation, conflict/rejection reporting, and source-schema evolution remain limitations |
 
