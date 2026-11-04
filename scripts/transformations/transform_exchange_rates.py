@@ -22,6 +22,7 @@ def transform_exchange_rates(input_dir=INPUT_DIR, database_path=DATABASE):
     if not files:
         raise FileNotFoundError(f"No exchange-rate files found in {input_dir}")
 
+    print(f"Reading exchange rates from {len(files)} files", flush=True)
     # Keep one rate per published date, base currency, and quote currency.
     rates = {}
     for path in files:
@@ -57,6 +58,13 @@ def transform_exchange_rates(input_dir=INPUT_DIR, database_path=DATABASE):
     if not rates:
         raise ValueError("No valid exchange rates found")
 
+    print(f"Prepared {len(rates)} distinct exchange rates for loading", flush=True)
+    # Pass one array per column so DuckDB can process the whole batch in one statement.
+    rate_dates = [day for day, base, quote in rates]
+    base_currencies = [base for day, base, quote in rates]
+    quote_currencies = [quote for day, base, quote in rates]
+    rate_values = list(rates.values())
+
     # Create the warehouse directory if this is the first load.
     database_path = Path(database_path)
     database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,15 +86,18 @@ def transform_exchange_rates(input_dir=INPUT_DIR, database_path=DATABASE):
                 )
             """)
             # Insert new keys or update their rates while retaining other stored history.
-            # The question marks receive the date, base, quote, and rate from each tuple.
+            # UNNEST turns the four equally sized arrays into aligned rows for a bulk upsert.
             # On a key conflict, excluded.rate means the incoming value replaces the stored rate.
-            connection.executemany("""
-                INSERT INTO core.exchange_rates VALUES (?, ?, ?, ?)
+            print(f"Upserting {len(rates)} exchange rates into DuckDB", flush=True)
+            connection.execute("""
+                INSERT INTO core.exchange_rates
+                SELECT unnest(?::DATE[]), unnest(?::VARCHAR[]),
+                       unnest(?::VARCHAR[]), unnest(?::DOUBLE[])
                 ON CONFLICT (rate_date, base_currency, quote_currency)
                 DO UPDATE SET rate = excluded.rate
-            """, [(day, base, quote, rate)
-                  for (day, base, quote), rate in rates.items()])
+            """, [rate_dates, base_currencies, quote_currencies, rate_values])
             # Make all inserts and updates permanent after the batch succeeds.
+            print("Committing exchange-rate changes", flush=True)
             connection.execute("COMMIT")
         except Exception:
             # Restore the previous database state and pass the error to the caller.
