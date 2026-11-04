@@ -32,9 +32,9 @@ python -m scripts.ingestion.ingress_exchange_rates backfill --start 2026-01-01
 python -m scripts.build_daily
 ```
 
-* For subsequent daily runs, use `python -m scripts.build_daily`. It fetches countries and yesterday's rates, loads all available raw files, and creates the reporting view.
+* For subsequent daily runs, use `python -m scripts.build_daily`. It fetches countries and refreshes the seven calendar dates from today minus seven days through yesterday (inclusive), loads all available raw files, and creates the reporting view.
 * Directories and the warehouse are created automatically. 
-* Backfill is a separate initial step; running only the daily build does not download historical data.
+* Backfill is a separate initial step; running only the daily build does not download history beyond its seven-day refresh window.
 
 ## Repository layout
 
