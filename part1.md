@@ -29,7 +29,7 @@ flowchart LR
 * While we have separate scripts for ingestion, transformation and reporting view creation, [scripts/build_daily.py](scripts/build_daily.py) coordinates it all in one script. 
 * Each transformation depends on its own ingestion; view creation requires both transformations. Independent steps continue after failures. 
 * The script logs outcomes and exits with a nonzero status on failure.
-* The daily build is manually executable; automated scheduling and automatic retries are not implemented.
+* The daily build is manually executable.
 
 ### Entity relationship diagram (ERD)
 
