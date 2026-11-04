@@ -54,6 +54,13 @@ python -m scripts.build_daily
 ```
 
 * For daily runs, use `python -m scripts.build_daily`. It fetches countries and exchange rate data (for the latter, it also refreshes the seven calendar dates from today minus six days through today (inclusive)), loads all available raw files, and creates the reporting view.
+* For a specific date refresh, use commands:
+```powershell
+# data refresh for ingress_exchange_rates for specific date:
+python -m scripts.ingestion.ingress_exchange_rates daily --date 2026-01-15
+# pipeline refresh for ingress_exchange_rates for specific date:
+python -m scripts.build_daily --date 2026-01-15
+```
 * Directories and the warehouse are created automatically. 
 * Backfill is a separate initial step; running only the daily build does not download history beyond its seven-day refresh window.
 

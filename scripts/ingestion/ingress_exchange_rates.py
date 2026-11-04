@@ -94,14 +94,17 @@ def run_backfill(start_date, end_date):
 def ingest_exchange_rate_daily(target_date):
     """Fetch a requested datetime.date and write files grouped by API rate date.
 
-    Returns None; fetch/write errors propagate. Actual dates may differ from
+    Returns the saved record count; fetch/write errors propagate. Actual dates may differ from
     target_date or from one another. Empty responses are reported without files.
     """
     records = fetch_rates(target_date)
     if not records:
-        print(f"No rates available for {target_date}")
-        return
+        logger.warning(
+            "No exchange-rate records received for %s; existing raw data is preserved", target_date
+        )
+        return 0
     _save_daily_records(records)
+    return len(records)
 
 
 if __name__ == "__main__":

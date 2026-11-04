@@ -1,5 +1,6 @@
 """Run daily ingestion, transformations, and reporting view creation."""
 
+import argparse
 import logging
 import sys
 from datetime import date, timedelta
@@ -12,11 +13,13 @@ LOOKBACK_DAYS = 7
 
 if __package__:
     from .ingestion.ingress_countries import ingest_countries
+    from .ingestion.ingress_exchange_rates import ingest_exchange_rate_daily
     from .ingestion.ingress_exchange_rates import run_backfill as ingest_exchange_rate_window
     from .transformations.transform_countries import transform_countries
     from .transformations.transform_exchange_rates import transform_exchange_rates
 else:
     from ingestion.ingress_countries import ingest_countries
+    from ingestion.ingress_exchange_rates import ingest_exchange_rate_daily
     from ingestion.ingress_exchange_rates import run_backfill as ingest_exchange_rate_window
     from transformations.transform_countries import transform_countries
     from transformations.transform_exchange_rates import transform_exchange_rates
@@ -30,7 +33,23 @@ def create_reporting_view():
         connection.execute(sql)
 
 
-def main():
+def parse_date(value):
+    """Accept only YYYY-MM-DD calendar dates no later than today."""
+    try:
+        target = date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("Expected a calendar date in YYYY-MM-DD format") from None
+    if target.isoformat() != value:
+        raise argparse.ArgumentTypeError("Expected a calendar date in YYYY-MM-DD format")
+    if target > date.today():
+        raise argparse.ArgumentTypeError("Date must not be in the future")
+    return target
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--date", type=parse_date, help="Refresh rates for YYYY-MM-DD instead of the seven-day window")
+    args = parser.parse_args(argv)
     # Configure console logging when the pipeline runs, leaving imports free of side effects.
     logging.basicConfig(
         level=logging.INFO,
@@ -41,11 +60,16 @@ def main():
     end_date = date.today()
     # Refresh seven calendar dates, including today, for missed or revised publications.
     start_date = end_date - timedelta(days=LOOKBACK_DAYS - 1)
-    logger.info("Starting daily pipeline with exchange-rate window %s through %s (inclusive)",
-                start_date, end_date)
+    if args.date is not None:
+        rate_operation, rate_args = ingest_exchange_rate_daily, (args.date,)
+        logger.info("Starting daily pipeline with exchange-rate date %s", args.date)
+    else:
+        rate_operation, rate_args = ingest_exchange_rate_window, (start_date, end_date)
+        logger.info("Starting daily pipeline with exchange-rate window %s through %s (inclusive)",
+                    start_date, end_date)
     operations = [
         ("countries ingestion", ingest_countries, (), ()),
-        ("exchange rates ingestion", ingest_exchange_rate_window, (start_date, end_date), ()),
+        ("exchange rates ingestion", rate_operation, rate_args, ()),
         ("countries transformation", transform_countries, (), ("countries ingestion",)),
         ("exchange rates transformation", transform_exchange_rates, (), ("exchange rates ingestion",)),
         ("reporting view", create_reporting_view, (),

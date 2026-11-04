@@ -133,12 +133,13 @@ In that case, I would cache successful API responses using source/target country
 
 ## 4. Security and monitoring: 
 
-1. API access: Serve requests over HTTPS, authenticate customers and enforce limits.  
+1. API access: Serve requests over HTTPS through GCP API Gateway, validating customer JWTs for authentication and enforcing per-client request quotas.  
 2. Least privilege / separation of concerns: Use separate SAs and PostgreSQL roles for ingestion and serving. For the former, the ingestion job needs to be able to save the raw responses in GCS and write them into the PostgreSQL tables, whereas for the latter, you only need read-only database access to reporting mart.
 3. Ingestion: Log each run's ID, status, duration, record counts and alert on failed runs. 
 4. Monitor latest available rate separately to investigate non-publication days, failed runs etc.
 5. API Health: Monitor latency, error rates etc. Include request IDs in logs and error responses for easier debugging.troubleshooting down the line. 
 6. For best results, I'd champion using IaC for easier maintainence, version control, reproducability and review.
+7. Availability: I'd use regional Cloud SQL high availability for automatic failover across zones. Cross region recovery would be a future improvement.
 
 ## 5. Failure Handling and Recovery: 
 
@@ -153,3 +154,18 @@ Customer facing API failures:
 1. Set database query timeouts so requests don't hang indefinitely. 
 2. Monitor server-error rates and alert on failures. 
 3. Return 503/500 error codes where appropriate, with request IDs for trouble shooting.
+
+
+## 6. Cost estimation: 
+
+* We'll start with a small Cloud SQL instance and cap Cloud Run instances to control costs. 
+* Keeping one API instance warm will reduce cold-start latency, but add costs. 
+* Regional Cloud SQL HA also increases sost in exchange for automatic failover. 
+* On the other hand, we can apply a GCS lifecycle policy to limit raw data retention costs and set up billing alerts to keep abreast of costs.
+
+I explored the proposed setup in the [Google Cloud Pricing Calculator](https://cloud.google.com/products/calculator?utm_source=chatgpt.com&hl=en&dl=CjhDaVEzTnpCa05qTm1ZaTAwTkRBNUxUUmlPV1V0T1RNMk55MDNaR0ZpTnpJM09EYzNNamtRQVE9PRAHGiRBQ0M4NTQxMi0wNkU0LTRGQzktQjg5Ny02NEEyMzA3Q0I4RUU) and estimated approximately $110 per month, based on the configuration I selected. 
+
+*Actual costs would of course depend on traffic, database sizing, storage, and availability settings.* 
+
+
+
