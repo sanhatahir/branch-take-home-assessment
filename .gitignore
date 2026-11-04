@@ -2,3 +2,16 @@
 .env
 .env.*
 !.env.example
+
+# Keep data directories through placeholders, but ignore their contents.
+/data/**
+!/data/**/
+!/data/**/.gitkeep
+
+# Generated DuckDB databases and write-ahead logs.
+*.duckdb
+*.duckdb.wal
+
+# Generated Python bytecode.
+__pycache__/
+*.pyc
