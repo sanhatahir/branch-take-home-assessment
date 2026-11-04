@@ -15,7 +15,7 @@ DEFAULT_OUTPUT_PATH = (
 # base URL
 COUNTRIES_URL = "https://countries.dev/countries"
 # additional propoerties we need
-COUNTRIES_FIELDS = ["name", "alpha2Code", "alpha3Code", "currencies"]
+COUNTRIES_FIELDS = ["name", "alpha2Code", "alpha3Code", "capital", "population", "currencies"]
 
 
 ## Defining ingestion functions:

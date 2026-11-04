@@ -6,13 +6,13 @@
 
 The assessment asks for country reference data, USD-based Frankfurter exchange rates beginning January 1, 2026, and a DuckDB model that supports current and historical country-to-country currency conversion, including **Peru (PEN) → Australia (AUD)**.
 
-**Implemented:** source ingestion and historical backfill, raw JSON storage, three normalized DuckDB tables, a country-to-country reporting view, and queries for the requested conversions. The pipeline runs locally; the country API differs from the originally specified endpoint, as explained below.
+**Implemented:** source ingestion and historical backfill, raw JSON storage, four normalized DuckDB tables, a country-to-country reporting view, and queries for the requested conversions. The pipeline runs locally; the country API differs from the originally specified endpoint, as explained below.
 
 **Key design choice:** store USD-based rates once by currency and publication date, then calculate cross-rates in a view. This avoids storing a separate fact row for every country pair.
 
 ## 2. Architecture and Data Model
 
-The central design is **three normalized physical tables and one derived reporting view**. Country-to-currency mappings preserve countries with multiple currencies and currencies shared by multiple countries. Exchange rates remain currency-level facts rather than being duplicated for every country pair.
+The central design is **four normalized physical tables and one derived reporting view**. Country-to-currency mappings preserve countries with multiple currencies and currencies shared by multiple countries. Exchange rates remain currency-level facts rather than being duplicated for every country pair.
 
 ### Pipeline at a glance
 
@@ -33,6 +33,13 @@ erDiagram
     COUNTRIES["core.countries — table"] {
         VARCHAR country_code PK
         VARCHAR country_name
+        VARCHAR capital
+        BIGINT population
+    }
+    CURRENCIES["core.currencies — table"] {
+        VARCHAR currency_code PK
+        VARCHAR currency_name
+        VARCHAR currency_symbol
     }
     COUNTRY_CURRENCIES["core.country_currencies — table"] {
         VARCHAR country_code PK
@@ -55,23 +62,29 @@ erDiagram
         DOUBLE exchange_rate
     }
     COUNTRIES ||..o{ COUNTRY_CURRENCIES : "logical country_code join"
-    COUNTRY_CURRENCIES }o..o{ EXCHANGE_RATES : "logical currency_code = quote_currency"
+    CURRENCIES ||..o{ COUNTRY_CURRENCIES : "logical currency_code join"
+    CURRENCIES |o..o{ EXCHANGE_RATES : "logical currency_code = quote_currency"
     EXCHANGE_RATES ||..o{ COUNTRY_EXCHANGE_RATES : "derived source rate"
     EXCHANGE_RATES ||..o{ COUNTRY_EXCHANGE_RATES : "derived destination rate"
 ```
 
-**How to read the diagram:** Solid entities labeled `core` are stored tables; `mart.country_exchange_rates` is a calculated SQL view, not a fourth table. Dashed relationships represent **logical joins**, not database-enforced foreign keys. The reporting view uses exchange rates twice—once for the source currency and once for the destination currency—on the same publication date.
+**How to read the diagram:** Solid entities labeled `core` are stored tables; `mart.country_exchange_rates` is a calculated SQL view, not a fifth physical table. Dashed relationships represent **logical joins**, not database-enforced foreign keys. The reporting view uses exchange rates twice—once for the source currency and once for the destination currency—on the same publication date.
 
 ### Table grains and keys
 
 | Object | Type | Grain / key |
 | --- | --- | --- |
-| `core.countries` | Table | One row per `country_code` (PK) |
+| `core.countries` | Table | One row per `country_code` (PK); includes nullable `capital VARCHAR` and `population BIGINT` |
+| `core.currencies` | Table | One row per `currency_code` (PK); nullable `currency_name VARCHAR` and `currency_symbol VARCHAR` |
 | `core.country_currencies` | Table | One row per `(country_code, currency_code)` (composite PK) |
 | `core.exchange_rates` | Table | One row per `(rate_date, base_currency, quote_currency)` (composite PK) |
 | `mart.country_exchange_rates` | View | One row per date, source country/currency and destination country/currency (no enforced PK) |
 
 All objects are stored in or defined against `data/warehouse/branch.duckdb`.
+The country–currency many-to-many relationship is resolved by `core.country_currencies`.
+Currency metadata comes only from country records; a Frankfurter quote can have no
+matching currency-dimension record. The reporting view continues to join the original
+country, bridge, and rate tables without an unnecessary metadata join.
 
 ### Execution and dependencies
 
@@ -83,14 +96,28 @@ The daily build is manually executable; automated scheduling and automatic retri
 
 | Source | Implemented endpoint | Requested/consumed fields |
 | --- | --- | --- |
-| countries.dev | `https://countries.dev/countries` | Requests `name,alpha2Code,alpha3Code,currencies`; models `alpha3Code`, string `name`, and `currencies[].code` |
+| countries.dev | `https://countries.dev/countries` | Requests `name,alpha2Code,alpha3Code,capital,population,currencies`; models Alpha-3 code, name, capital, population, and `currencies[].code/name/symbol`; Alpha-2 remains in raw JSON |
 | Frankfurter | `https://api.frankfurter.dev/v2/rates` | Requests `base=USD` with `date` or `from`/`to`; consumes `date`, `base`, `quote`, `rate` |
 
 ### Country API substitution
 
 The assessment names REST Countries (`/v3.1/all`), but the implemented pipeline uses `countries.dev`. During exploration, the REST Countries version/access changes introduced a bearer-token requirement for the alternative considered. I chose an open endpoint so reviewers can reproduce the pipeline without configuring API credentials. This is an **explicit deviation from the specified source**, not an implementation of the original endpoint.
 
-The substitute returns a string `name`, `alpha3Code`, and a list of currencies, rather than the specified nested name, `cca3`, and currency dictionary. Only identification and currency fields needed for conversion are ingested; the [EDA notebook](initial_eda.ipynb) documents exploratory work, not the production entry point.
+The substitute returns a string `name`, `alpha3Code`, and a list of currencies, rather than the specified nested name, `cca3`, and currency dictionary. Identification, capital, population, and nested currency metadata are ingested; the [EDA notebook](initial_eda.ipynb) documents exploratory work, not the production entry point.
+
+The inspected countries.dev response supplies `capital` as a string when available,
+`population` as an integer, and currency metadata as nested `code`, `name`, and
+`symbol` strings. Five countries had no capital: Antarctica, Bouvet Island, United
+States Minor Outlying Islands, Heard Island and McDonald Islands, and Macao.
+South Africa was supplied only as Pretoria: the pipeline preserves that value and
+does not add capitals from another source. If a list is supplied, all usable names
+are retained as semicolon-separated text. Population and capitals are latest-source
+attributes; their observation dates and completeness are not established by this API.
+
+Shared metadata can disagree. The live response had name conflicts for USD, NZD,
+and FKP, and symbol conflicts for EGP, JOD, and ZMW. For example, NZD appeared as
+both “New Zealand dollar” and “Niue dollar”. The deterministic resolution rule in
+Section 4 selects a supplied value rather than fabricating a canonical description.
 
 ### Ingestion strategy
 
@@ -130,11 +157,31 @@ they do not append duplicate raw records or preserve versioned raw history.
 
 **Countries.** [transform_countries.py](scripts/transformations/transform_countries.py)
 trims names, uppercases trimmed codes, and flattens the nested currency list into
-distinct pairs. One transaction replaces both country tables. A dictionary keeps
-the last usable name for a repeated country code; a set accumulates its currency
+distinct pairs. One transaction replaces countries, currencies, and the bridge.
+A dictionary keeps the last usable attributes for a repeated country code; a set accumulates its currency
 relationships across those records. Missing or unusable country identifiers/names
 are skipped. A missing currency list is allowed. Empty/all-unusable country input
 fails without clearing stored data.
+
+Capital is nullable text. A supplied list of capital names is trimmed and joined
+with `; ` in source order, preserving all supplied names. Population is nullable
+BIGINT; provided values must be nonnegative Python integers within the BIGINT range.
+Booleans, numeric strings, fractions, negatives, and overflow are rejected with an
+exception before database writes, preserving the previous snapshot. These fields
+represent the latest available source snapshot, not historical demographics.
+
+Currency codes are trimmed and uppercased, with one row per distinct code. Names
+and symbols are trimmed; missing/non-string/blank descriptions become NULL. Shared
+currency conflicts are resolved independently for each attribute by selecting the
+lexicographically smallest nonempty string (Python Unicode ordering). The selected
+name and symbol can therefore come from different records; neither is fabricated.
+This deterministic rule is not a claim that one description is more authoritative.
+
+For existing databases, idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
+statements add `capital` and `population` to `core.countries`; `core.currencies` is
+created if absent. Migration and all three table loads share the transaction, so
+any database failure rolls them back together. No exchange-rate table or reporting
+view is dropped. Old raw snapshots lacking the new fields still load with NULLs.
 
 **Rates.** [transform_exchange_rates.py](scripts/transformations/transform_exchange_rates.py)
 reads all `rates_*.json` files in sorted filename order, parses record dates and numeric
@@ -173,7 +220,7 @@ implementation is maintained only in the SQL file linked above.
 
 These results were queried from the local warehouse on **November 3, 2026**. They
 are stored reference observations, not live trading rates or guaranteed future outputs.
-The local tables contained 250 countries, 268 currency mappings, and 46,789 rate rows.
+The isolated enriched warehouse contained 250 countries, 163 currencies, 268 currency mappings, and 46,789 rate rows. Results below reflect the refreshed live-source validation.
 
 ### “What is the current exchange rate between Peru (PER) and Australia (AUS)?”
 
@@ -192,7 +239,7 @@ LIMIT 1;
 
 | Published date | Conversion | Verified exchange rate |
 | --- | --- | --- |
-| 2026-11-03 | 1 PEN → AUD | 0.41290341220999105 |
+| 2026-11-03 | 1 PEN → AUD | 0.4129611973072145 |
 
 ### “What was the exchange rate yesterday between Peru (PER) and Australia (AUS)?”
 
@@ -229,7 +276,7 @@ Implemented behavior:
   Neither transformation nor reporting forward-fills observations. The API may return
   earlier published records for a requested date; ingestion preserves their actual dates.
 - Multiple currencies per country and shared currencies survive normalization. Country
-  data is the latest snapshot, not historical currency ownership.
+  data is the latest snapshot, not historical currency ownership; capitals and populations also reflect only the latest source snapshot.
 - Country/code validation requires nonempty strings; it does not validate length or
   ISO membership. Annotated codes remain. Malformed currency containers can stop a
   country transformation. Rates require a parseable date, USD base, nonempty quote,
@@ -260,25 +307,46 @@ source-completeness checks, retries/backoff, scheduling, and freshness alerts.
 ### Testing and Validation
 
 Install `requirements-dev.txt` and run `python -m pytest -v` from the repository root.
-Four pytest tests exercise the actual transformations and reporting SQL: idempotent
-rate loads and corrected-value updates, the PEN → AUD cross-rate calculation,
-missing weekend publication dates without forward-filling, and multiple/shared
-country currencies without duplicate mappings. All four use pytest's `tmp_path`
-for isolated data and databases, and make no live API calls. The existing mocked
-empty-response test remains in the suite, checking warnings and preserved raw files.
+The tests exercise the actual transformations and reporting SQL: idempotent rate
+loads and corrections, PEN → AUD calculation, missing dates without forward-filling,
+country capitals/populations, multiple/shared currencies and metadata resolution,
+missing optional values, invalid-population rejection, repeatable schema upgrades
+with preserved FX history and reporting, and transactional rollback. Pytest fixtures
+use temporary data/databases and no live API calls. The existing mocked empty-response
+test remains in the suite, checking warnings and preserved raw files.
 
 These automated checks are separate from live end-to-end validation and do not
 establish API availability or source freshness.
 
-Validation on November 3, 2026: all five collected tests passed (four new pytest
-tests plus the existing empty-response regression); none failed. Dependencies
-installed successfully in a fresh virtual environment and `pip check` passed.
-An isolated source copy with no initial data completed the documented January 1
-backfill and daily build against the live APIs. Its warehouse contained 250 countries,
-268 currency mappings, 46,789 rates, and the reporting view. Both assessment queries
-executed. A separate mocked-empty-response run continued through reporting with exit
-code `0` and the warning summary. Hash checks confirmed the developer's original
-raw files and warehouse were unchanged. No application changes were needed.
+Validation on November 3, 2026: **12 tests passed, 0 failed**. Existing runtime/test
+dependencies installed in an isolated virtual environment; `pip check` passed.
+A fresh source copy completed live country ingestion and transformation, the January 1
+FX backfill, and the full daily build with the unchanged October 27–November 2 lookback.
+All five build steps succeeded. The reporting object remained a VIEW, both assessment
+queries executed, and repeated country loading preserved the normalized reference
+rows and every exchange-rate record. Unit tests separately verified migration with
+an existing reporting view, preservation of legacy FX history, and rollback.
+
+| Verified object / attribute | Rows or coverage |
+| --- | ---: |
+| `core.countries` | 250 |
+| `core.currencies` | 163 |
+| `core.country_currencies` | 268 |
+| `core.exchange_rates` | 46,789 |
+| Countries with a nonempty capital | 245 / 250 |
+| Countries with population | 250 / 250 |
+| Countries with both attributes | 245 / 250 |
+| Currencies with a nonempty name | 163 / 163 |
+| Currencies with a nonempty symbol | 163 / 163 |
+| Currencies with both descriptions | 163 / 163 |
+| Duplicate primary-key groups | 0 in each of the four core tables |
+| Duplicate reporting-grain groups | 0 |
+
+Coverage describes supplied/nonempty values, not independent verification of their
+accuracy or freshness. Original developer raw files and warehouse were untouched,
+confirmed by before/after SHA-256 hashes. All live writes used the isolated copy.
+The empty-response regression continues to pass. No FX ingestion, FX transformation,
+reporting SQL, lookback, or orchestration changes were needed.
 
 Follow [README setup](README.md#setup-and-execution) first. Run commands from the
 repository root; both `python -m ...` and direct script execution are supported.
@@ -317,7 +385,7 @@ The following code also works in a Python session started from the repository ro
 import duckdb
 
 with duckdb.connect("data/warehouse/branch.duckdb", read_only=True) as con:
-    for table in ("core.countries", "core.country_currencies", "core.exchange_rates"):
+    for table in ("core.countries", "core.currencies", "core.country_currencies", "core.exchange_rates"):
         print(table, con.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
     result = con.execute("""
         SELECT rate_date, source_currency, destination_currency, exchange_rate
