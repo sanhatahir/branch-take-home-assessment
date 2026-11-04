@@ -54,6 +54,7 @@ def main():
     failures = []
     succeeded = set()
     skipped = []
+    had_warnings = False
     for name, operation, args, dependencies in operations:
         # Run each step only after all its required operations have succeeded.
         missing_dependencies = [dependency for dependency in dependencies if dependency not in succeeded]
@@ -63,7 +64,12 @@ def main():
             continue
         logger.info("STARTING: %s", name)
         try:
-            operation(*args)
+            result = operation(*args)
+            if name == "exchange rates ingestion" and result == 0:
+                had_warnings = True
+                logger.warning(
+                    "No new exchange-rate records were received; existing historical data will be reused"
+                )
         except Exception:
             failures.append(name)
             logger.exception("FAILED: %s", name)
@@ -76,7 +82,10 @@ def main():
         logger.error("%s: %s failed, %s skipped out of %s operations",
                      status, len(failures), len(skipped), len(operations))
         return 1
-    logger.info("Daily pipeline succeeded")
+    if had_warnings:
+        logger.warning("Daily pipeline completed with warnings")
+    else:
+        logger.info("Daily pipeline succeeded")
     return 0
 
 

@@ -1,5 +1,6 @@
 # Importing required packages:
 import argparse
+import logging
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -8,6 +9,8 @@ if __package__:
 else:
     from utils import fetch_json, save_json_atomic
 
+
+logger = logging.getLogger(__name__)
 
 exchange_rate_url = "https://api.frankfurter.dev/v2/rates"
 exchange_rate_start_date = date(2026, 1, 1)
@@ -74,14 +77,18 @@ def run_backfill(start_date, end_date):
     """
     Objective: Fetch a date range and replace one JSON file per actual API rate date.
 
-    Inputs are datetime.date objects. Returns None; fetch/write errors propagate.
+    Inputs are datetime.date objects. Returns the saved record count; errors propagate.
     Empty responses create no files. Records are never forward-filled.
     """
     records = fetch_rates(start_date, end_date)
     if not records:
-        print(f"No rates available from {start_date} to {end_date}")
-        return
+        logger.warning(
+            "No exchange-rate records received from %s to %s; existing raw data is preserved",
+            start_date, end_date,
+        )
+        return 0
     _save_daily_records(records)
+    return len(records)
 
 
 def ingest_exchange_rate_daily(target_date):

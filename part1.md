@@ -104,7 +104,12 @@ defaults to the execution machine's current date.
 * Each daily build requests seven calendar dates: today minus seven days through yesterday, inclusive, using the machine's local calendar date. It reuses Frankfurter's range ingestion to recover missed runs and refresh late-arriving or corrected observations within that window. For a November 3 run, the requested range is October 27 through November 2.
 * Ending yesterday avoids relying on an unfinished current day but does not guarantee completeness. Missed dates or revisions older than seven days require a manual backfill. The standalone ingestion `daily` command still requests a single date.
 * Returned publication dates can differ from requested dates. Ingestion does not forward-fill dates or rename records to the requested date, and does not filter returned dates to the requested backfill bounds. 
-* Empty rate responses create no files and return normally; this counts as successful ingestion in the daily build.
+* Empty range responses log a warning with the requested dates, preserve existing raw files,
+  and return `0`; successful nonempty range ingestion returns the number of records saved.
+  The daily build warns that historical data will be reused and continues through
+  transformation and reporting. If those steps succeed, it exits `0` and logs
+  `Daily pipeline completed with warnings`. Genuine exceptions still produce failure
+  status; for example, transformation can fail if no historical raw files exist.
 * A subsequent transformation still processes all existing raw rate files.
 
 [Shared utilities](scripts/ingestion/utils.py) use `requests.get`, raise unsuccessful
