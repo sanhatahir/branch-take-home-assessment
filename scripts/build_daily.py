@@ -1,9 +1,13 @@
 """Run daily ingestion, transformations, and reporting view creation."""
 
+import logging
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
+
+logger = logging.getLogger(__name__)
 
 if __package__:
     from .ingestion.ingress_countries import ingest_countries
@@ -26,7 +30,15 @@ def create_reporting_view():
 
 
 def main():
+    # Configure console logging when the pipeline runs, leaving imports free of side effects.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
+    )
     target_date = date.today() - timedelta(days=1)
+    logger.info("Starting daily pipeline with exchange-rate target date %s", target_date)
     operations = [
         ("countries ingestion", ingest_countries, (), ()),
         ("exchange rates ingestion", ingest_exchange_rate_daily, (target_date,), ()),
@@ -43,22 +55,24 @@ def main():
         missing_dependencies = [dependency for dependency in dependencies if dependency not in succeeded]
         if missing_dependencies:
             skipped.append(name)
-            print(f"SKIPPED: {name}: {', '.join(missing_dependencies)} did not succeed")
+            logger.warning("SKIPPED: %s: %s did not succeed", name, ", ".join(missing_dependencies))
             continue
+        logger.info("STARTING: %s", name)
         try:
             operation(*args)
-        except Exception as exc:
+        except Exception:
             failures.append(name)
-            print(f"FAILED: {name}: {exc}")
+            logger.exception("FAILED: %s", name)
         else:
             succeeded.add(name)
-            print(f"SUCCEEDED: {name}")
+            logger.info("SUCCEEDED: %s", name)
 
     if failures:
         status = "FAILED" if not succeeded else "PARTIAL FAILURE"
-        print(f"{status}: {len(failures)} failed, {len(skipped)} skipped out of {len(operations)} operations")
+        logger.error("%s: %s failed, %s skipped out of %s operations",
+                     status, len(failures), len(skipped), len(operations))
         return 1
-    print("Daily pipeline succeeded")
+    logger.info("Daily pipeline succeeded")
     return 0
 
 
