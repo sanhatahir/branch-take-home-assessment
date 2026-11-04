@@ -85,9 +85,8 @@ As such, I deviated from restcountries and instead, went for open alternatives, 
 
 * The initial backfill calls Frankfurter with `base=USD&from=2026-01-01`; omitted `--end`
 defaults to the execution machine's current date. 
-* A daily run requests yesterday, using the machine's local calendar date. This reduces the chance of loading a day
-whose publications are still in progress, but does not guarantee completeness.
-* There is no rolling lookback window or automatic recovery of missed daily runs.
+* Each daily build requests seven calendar dates: today minus seven days through yesterday, inclusive, using the machine's local calendar date. It reuses Frankfurter's range ingestion to recover missed runs and refresh late-arriving or corrected observations within that window. For a November 3 run, the requested range is October 27 through November 2.
+* Ending yesterday avoids relying on an unfinished current day but does not guarantee completeness. Missed dates or revisions older than seven days require a manual backfill. The standalone ingestion `daily` command still requests a single date.
 * Returned publication dates can differ from requested dates. * Ingestion does not forward-fill dates or rename records to the requested date, and does not filter returned dates to the requested backfill bounds. 
 * Empty rate responses create no files and return normally; this counts as successful ingestion in the daily build.
 * A subsequent transformation still processes all existing raw rate files.
@@ -267,11 +266,11 @@ Implemented behavior:
   successful country snapshot removes prior countries absent from that snapshot.
   Exchange-rate history absent from the current input is retained, not deleted.
 - “Latest” is only as fresh as the stored observations. The daily build is not a
-  completeness check and does not automatically refresh old dates. DOUBLE calculations
+  completeness check and does not automatically refresh dates outside its seven-day window. DOUBLE calculations
   are approximate and exclude transfer fees and transaction spreads.
 
 Potential improvements, **not implemented**: rejection metrics, strict code validation,
-conflict detection, versioned raw snapshots, a bounded historical refresh window,
+conflict detection, versioned raw snapshots,
 source-completeness checks, retries/backoff, scheduling, and freshness alerts.
 
 ## 9. Running and Validating the Pipeline
@@ -303,7 +302,7 @@ python -c "from scripts.build_daily import create_reporting_view; create_reporti
 The daily command has no backfill/date flags. Ingestion's backfill validates that
 start is not after end; default start is January 1, 2026. Transformation CLI entry
 points accept no path flags, although their Python functions accept path arguments.
-A smaller first run can omit backfill, with correspondingly limited history.
+A smaller first run can omit backfill, with history limited to the daily build's seven-day request window and any extra published dates returned by the API.
 
 Use [querying_data.ipynb](querying_data.ipynb) with a notebook kernel that has the
 project dependencies installed. Notebook tooling is separate from `requirements.txt`.
