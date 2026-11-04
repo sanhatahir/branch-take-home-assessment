@@ -148,7 +148,7 @@ they do not append duplicate raw records or preserve versioned raw history.
 
 **Countries:** [transform_countries.py](scripts/transformations/transform_countries.py)
 1. Trims names, uppercases trimmed codes, and flattens the nested currency list into distinct pairs. 
-2. A single run replaces countries, currencies, and the bridge table so re-running with the same impot produces the same stored data. 
+2. A single run replaces countries, currencies, and the bridge table so re-running with the same import produces the same stored data. 
 3. A dictionary keeps the last usable attributes for a repeated country code; a set accumulates its currency
 relationships across those records. 
 4. Shared
@@ -160,7 +160,7 @@ currency conflicts are resolved independently for each attribute by selecting th
 1. Reads all `rates_*.json` files in sorted filename order 
 2. Parses record dates and numeric
 rates, normalizes codes, and deduplicates at the rate key. The last usable record wins within the ordered input. 
-3. Upserts records nased om composite primary key (rate_date, base_currency, quote_currency) so same input doesn't produce duplicates and corrected rates are updated in their records.
+3. Upserts records based on composite primary key (rate_date, base_currency, quote_currency) so same input doesn't produce duplicates and corrected rates are updated in their records.
 
 ## 5. Reporting Layer
 
@@ -219,7 +219,7 @@ WHERE source_country_code = 'PER'
 
 | Reference date | Requested publication date | Conversion | Verified exchange rate |
 | --- | --- | --- | --- |
-| 2026-11-04 | 2026-11-03 | 1 PEN → AUD | 0.0.4131125751271382 |
+| 2026-11-04 | 2026-11-03 | 1 PEN → AUD | 0.4131125751271382 |
 
 
 ## 7. Data Quality and Edge Cases
@@ -244,6 +244,29 @@ Plans for future potential improvements, **not implemented**:
 
 
 ## 8. Running and Validating the Pipeline
+
+### Refresh a specific date
+
+Run from the repository root:
+
+```bash
+# Default: refresh seven calendar dates ending today
+python -m scripts.build_daily
+# Refresh one requested exchange-rate date and run the entire pipeline
+python -m scripts.build_daily --date 2026-01-15
+```
+
+The optional date must be a valid `YYYY-MM-DD` calendar date no later than today;
+invalid or future dates are rejected before ingestion. Countries are refreshed
+from their latest snapshot; this does not reconstruct historical country–currency
+mappings. Both transformations and reporting-view creation run with the same
+dependency checks and failure statuses as the default build.
+
+The date controls only the Frankfurter request. Actual returned publication dates
+are stored without forward-filling; the rate transformation still reads all saved
+raw files and uses idempotent upserts that retain historical rates. Empty responses
+warn, preserve saved files, and reuse available history. If downstream processing
+cannot succeed (for example, no saved rate files exist), the build exits nonzero.
 
 ### Testing and Validation
 The tests run the real transformations and reporting SQL. They cover:
