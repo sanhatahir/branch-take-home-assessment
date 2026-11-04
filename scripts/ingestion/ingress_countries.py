@@ -1,10 +1,14 @@
 ## Importing required packages
+import logging
 from pathlib import Path
 
 if __package__:
     from .utils import fetch_json, save_json_atomic
 else:
     from utils import fetch_json, save_json_atomic
+
+
+logger = logging.getLogger(__name__)
 
 
 ## Setting constants:
@@ -53,9 +57,14 @@ def fetch_countries():
 def ingest_countries():
     countries = fetch_countries()
     save_json_atomic(countries, DEFAULT_OUTPUT_PATH)
-    print(f"Successfully fetched {len(countries)} countries")
-    print(f"Saved to {DEFAULT_OUTPUT_PATH}")
+    logger.info("Successfully fetched %s countries", len(countries))
+    logger.info("Saved to %s", DEFAULT_OUTPUT_PATH)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     ingest_countries()
